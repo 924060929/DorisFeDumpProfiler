@@ -84,7 +84,7 @@ public class AnalyzeDorisFeHprof {
 
     private ThreadEntity toThreadEntity(ThreadObjectGCRoot thread) {
         Instance instance = thread.getInstance();
-        String threadName = StringInstanceUtils.getString((Instance) instance.getValueOfField("name"));
+        String threadName = StringInstanceUtils.getDetailsString((Instance) instance.getValueOfField("name"));
         Boolean daemon = (Boolean) instance.getValueOfField("daemon");
         Integer priority = (Integer) instance.getValueOfField("priority");
         Long tid = (Long) instance.getValueOfField("tid");
@@ -197,15 +197,15 @@ public class AnalyzeDorisFeHprof {
                     loadIdStr = printId(hi, lo);
                 }
 
-                String defaultCatalog = StringInstanceUtils.getString((Instance) connectContext.getValueOfField("defaultCatalog"));
-                String currentDb = StringInstanceUtils.getString((Instance) connectContext.getValueOfField("currentDb"));
+                String defaultCatalog = StringInstanceUtils.getDetailsString((Instance) connectContext.getValueOfField("defaultCatalog"));
+                String currentDb = StringInstanceUtils.getDetailsString((Instance) connectContext.getValueOfField("currentDb"));
 
                 Instance originStmt = (Instance) javaLocal.getValueOfField("originStmt");
                 int sqlIdx = 0;
                 String sql = null;
                 if (originStmt != null) {
                     sqlIdx = (Integer) originStmt.getValueOfField("idx");
-                    sql = StringInstanceUtils.getString((Instance) originStmt.getValueOfField("originStmt"));
+                    sql = StringInstanceUtils.getDetailsString((Instance) originStmt.getValueOfField("originStmt"));
                 }
                 return new ContextId(queryIdStr, loadIdStr, defaultCatalog, currentDb, sql, sqlIdx);
             }
@@ -634,8 +634,8 @@ public class AnalyzeDorisFeHprof {
     }
 
     private DbTable analyzeTable(Instance table) {
-        String tableName = StringInstanceUtils.getString((Instance) table.getValueOfField("name"));
-        String dbName = StringInstanceUtils.getString((Instance) table.getValueOfField("qualifiedDbName"));
+        String tableName = StringInstanceUtils.getDetailsString((Instance) table.getValueOfField("name"));
+        String dbName = StringInstanceUtils.getDetailsString((Instance) table.getValueOfField("qualifiedDbName"));
         return new DbTable(dbName, tableName);
     }
 
