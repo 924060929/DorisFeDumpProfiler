@@ -287,6 +287,7 @@ public class AnalyzeDorisFeHprof {
         System.out.println("    waiting queue:");
         do {
             Instance thread = (Instance) next.getValueOfField("thread");
+            // jdk8-jdk13
             if (thread != null) {
                 Instance nextWaiter = (Instance) next.getValueOfField("nextWaiter");
                 ThreadEntity threadEntity = threadObjIdToThread.get(thread.getInstanceId());
@@ -296,6 +297,20 @@ public class AnalyzeDorisFeHprof {
                 } else {
                     threadSyncs.add(new ThreadSync(true, threadEntity, sync));
                     System.out.println("       read:  \"" + threadEntity.threadName + "\"");
+                }
+            } else {
+                // jdk14+
+                thread = (Instance) next.getValueOfField("waiter");
+                if (thread != null) {
+                    boolean isRead = hasSuperClass(next.getJavaClass(), "java.util.concurrent.locks.AbstractQueuedSynchronizer$SharedNode");
+                    ThreadEntity threadEntity = threadObjIdToThread.get(thread.getInstanceId());
+                    if (!isRead) {
+                        threadSyncs.add(new ThreadSync(false, threadEntity, sync));
+                        System.out.println("       write: \"" + threadEntity.threadName + "\"");
+                    } else {
+                        threadSyncs.add(new ThreadSync(true, threadEntity, sync));
+                        System.out.println("       read:  \"" + threadEntity.threadName + "\"");
+                    }
                 }
             }
             next = (Instance) next.getValueOfField("next");
