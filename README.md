@@ -12,6 +12,9 @@
 mvn clean package
 ```
 
+## 直接下载预编译包
+[release](https://github.com/924060929/DorisFeDumpProfiler/releases)
+
 ## 使用方式
 1. 先在卡住的fe上执行dump命令
 ```shell
