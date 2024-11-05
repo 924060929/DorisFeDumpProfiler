@@ -353,78 +353,79 @@ public class AnalyzeDorisFeHprof {
 
     private void printThreadDependsTree(ThreadDepends depends, int level) {
         String indent = "    " + Strings.repeat("   ", level);
-        String ThreadObjectGCRoot;
+        String lockInfo;
         if (depends instanceof RunningThreadDepends) {
-            ThreadObjectGCRoot = "\"" + depends.threadSync.threadEntity.threadName + "\" running (Live lock)";
+            lockInfo = depends + "\" running (Live lock)";
         } else if (depends instanceof DeadLockDepends) {
-            ThreadObjectGCRoot = "\"" + depends.threadSync.threadEntity.threadName + "\" blocked by " + (depends.threadSync.isRead ? "read " : "write ") + depends.dbTable + " (Dead lock)";
+            lockInfo = depends + " (Dead lock)";
         } else {
-            ThreadObjectGCRoot = "\"" + depends.threadSync.threadEntity.threadName + "\" blocked by " + (depends.threadSync.isRead ? "read " : "write ") + depends.dbTable;
+            lockInfo = depends.toString();
         }
-        System.out.println(indent + ThreadObjectGCRoot);
+        System.out.println(indent + lockInfo);
         for (ThreadDepends nextDepends : depends.depends.values()) {
             printThreadDependsTree(nextDepends, level + 1);
         }
     }
 
-    private ThreadDepends analyzeBlockTree(ThreadBlockReason threadBlockReason,
+    private ThreadDepends analyzeBlockTree(
+            ThreadBlockReason threadBlockReason,
             Map<Instance, LockHolder> lockHolders,
             Map<Instance, List<ThreadSync>> syncToWaitingThreads,
             TableLockDependencies tableLockDependencies, Map<Long, ThreadBlockReason> blockThreads) {
         Map<Long, ThreadDepends> visitedThreadIds = Maps.newLinkedHashMap();
-        Instance sync = threadBlockReason.blockingReason.syncFrame.sync;
-        ThreadDepends depends = new ThreadDepends(
-                new ThreadSync(threadBlockReason.blockingReason.lockMethod.isRead, threadBlockReason.threadEntity, sync),
+        Instance blockedSync = threadBlockReason.blockingReason.syncFrame.sync;
+        ThreadDepends blockedDepends = new ThreadDepends(
+                null, null,
+                new ThreadSync(threadBlockReason.blockingReason.lockMethod.isRead, threadBlockReason.threadEntity, blockedSync),
                 threadBlockReason.blockingReason.dbTable
         );
-        visitedThreadIds.put(threadBlockReason.threadEntity.tid, depends);
-        doAnalyzeBlockTree(visitedThreadIds, lockHolders, depends, syncToWaitingThreads, tableLockDependencies, blockThreads);
-        return depends;
+        visitedThreadIds.put(threadBlockReason.threadEntity.tid, blockedDepends);
+        doAnalyzeBlockTree(visitedThreadIds, lockHolders, blockedDepends, blockedSync, syncToWaitingThreads, tableLockDependencies, blockThreads);
+        return blockedDepends;
     }
 
     private void doAnalyzeBlockTree(Map<Long, ThreadDepends> visitedThreads,
-            Map<Instance, LockHolder> lockHolders, ThreadDepends depends,
+            Map<Instance, LockHolder> lockHolders, ThreadDepends depends, Instance blockedSync,
             Map<Instance, List<ThreadSync>> syncToWaitingThreads,
             TableLockDependencies tableLockDependencies, Map<Long, ThreadBlockReason> blockThreads) {
-        Instance sync = depends.threadSync.sync;
-        if (depends.threadSync.isRead) {
-            LockHolder lockHolder = lockHolders.get(sync);
+        if (depends.blockedSync.isRead) {
+            LockHolder lockHolder = lockHolders.get(blockedSync);
             if (lockHolder != null && lockHolder.holdWriteLockThread != null) {
                 analyzeNextDepends(
                         visitedThreads, lockHolders, depends, syncToWaitingThreads, tableLockDependencies,
-                        blockThreads, sync, lockHolder.holdWriteLockThread, false
+                        blockThreads, blockedSync, lockHolder.holdWriteLockThread, false, true
                 );
             } else if (lockHolder != null) {
-                List<ThreadSync> threadSyncs = syncToWaitingThreads.get(sync);
+                List<ThreadSync> threadSyncs = syncToWaitingThreads.get(blockedSync);
                 if (threadSyncs != null) {
                     for (ThreadSync threadSync : threadSyncs) {
                         if (!threadSync.isRead) {
                             analyzeNextDepends(visitedThreads, lockHolders, depends,
                                     syncToWaitingThreads, tableLockDependencies,
-                                    blockThreads, sync, threadSync.threadEntity, false);
+                                    blockThreads, blockedSync, threadSync.threadEntity, false, false);
                             break;
-                        } else if (threadSync.threadEntity.tid == depends.threadSync.threadEntity.tid) {
+                        } else if (threadSync.threadEntity.tid == depends.holdSync.threadEntity.tid) {
                             break;
                         }
                     }
                 }
             }
         } else {
-            LockHolder lockHolder = lockHolders.get(sync);
+            LockHolder lockHolder = lockHolders.get(blockedSync);
             if (lockHolder != null && lockHolder.getHoldReadLockThreads() != null) {
                 for (ThreadEntity readThread : lockHolder.getHoldReadLockThreads().keySet()) {
                     analyzeNextDepends(visitedThreads, lockHolders, depends, syncToWaitingThreads, tableLockDependencies,
-                            blockThreads, sync, readThread, true);
+                            blockThreads, blockedSync, readThread, true, true);
                 }
             } else {
-                List<ThreadSync> threadSyncs = syncToWaitingThreads.get(sync);
+                List<ThreadSync> threadSyncs = syncToWaitingThreads.get(blockedSync);
                 if (threadSyncs != null) {
                     for (ThreadSync threadSync : threadSyncs) {
-                        if (threadSync.threadEntity.tid == depends.threadSync.threadEntity.tid) {
+                        if (threadSync.threadEntity.tid == depends.holdSync.threadEntity.tid) {
                             break;
                         } else {
                             analyzeNextDepends(visitedThreads, lockHolders, depends, syncToWaitingThreads, tableLockDependencies,
-                                    blockThreads, sync, threadSync.threadEntity, threadSync.isRead);
+                                    blockThreads, blockedSync, threadSync.threadEntity, threadSync.isRead, false);
                             break;
                         }
                     }
@@ -437,27 +438,44 @@ public class AnalyzeDorisFeHprof {
             Map<Instance, LockHolder> lockHolders, ThreadDepends depends,
             Map<Instance, List<ThreadSync>> syncToWaitingThreads,
             TableLockDependencies tableLockDependencies,
-            Map<Long, ThreadBlockReason> blockThreads, Instance sync, ThreadEntity nextThread, boolean isRead) {
-        ThreadDepends nextDepends = visitedThreads.get(nextThread.tid);
-        if (nextDepends != null) {
-            depends.depends.put(nextThread.tid, new DeadLockDepends(nextDepends.threadSync, nextDepends.dbTable));
+            Map<Long, ThreadBlockReason> blockThreads, Instance holdSyncInstance, ThreadEntity nextThread,
+            boolean isRead, boolean isHold) {
+        ThreadDepends existDepends = visitedThreads.get(nextThread.tid);
+        ThreadSync nextSync = new ThreadSync(isRead, nextThread, holdSyncInstance);
+        if (existDepends != null) {
+            DeadLockDepends deadLockDepends;
+            if (isHold) {
+                deadLockDepends = new DeadLockDepends(nextSync, depends.blockedSyncDbTable, existDepends.blockedSync, existDepends.blockedSyncDbTable);
+            } else {
+                deadLockDepends = new DeadLockDepends(null, null, nextSync, depends.blockedSyncDbTable);
+            }
+            depends.depends.put(nextThread.tid, deadLockDepends);
             return;
         }
 
         ThreadBlockReason threadBlockReason = blockThreads.get(nextThread.tid);
         if (threadBlockReason == null) {
-            depends.depends.put(nextThread.tid, new RunningThreadDepends(new ThreadSync(isRead, nextThread, sync)));
+            depends.depends.put(nextThread.tid, new RunningThreadDepends(nextSync, depends.blockedSyncDbTable));
             return;
         }
 
-        ThreadSync holdWriteLockThread = new ThreadSync(isRead, nextThread, sync);
-        DbTable dbTable = tableLockDependencies.syncObjToDbTable.get(sync);
-        nextDepends = new ThreadDepends(holdWriteLockThread, dbTable);
-        depends.depends.put(nextThread.tid, nextDepends);
-        visitedThreads.put(nextThread.tid, nextDepends);
+        ThreadSync blockedSync = new ThreadSync(
+                threadBlockReason.blockingReason.lockMethod.isRead,
+                threadBlockReason.threadEntity,
+                threadBlockReason.blockingReason.syncFrame.sync
+        );
+        if (isHold) {
+            existDepends = new ThreadDepends(nextSync, depends.blockedSyncDbTable, blockedSync, threadBlockReason.blockingReason.dbTable);
+        } else {
+            existDepends = new ThreadDepends(null, null, blockedSync, threadBlockReason.blockingReason.dbTable);
+        }
+        depends.depends.put(nextThread.tid, existDepends);
+        visitedThreads.put(nextThread.tid, existDepends);
 
         doAnalyzeBlockTree(
-                visitedThreads, lockHolders, nextDepends, syncToWaitingThreads, tableLockDependencies, blockThreads);
+                visitedThreads, lockHolders, existDepends, threadBlockReason.blockingReason.syncFrame.sync,
+                syncToWaitingThreads, tableLockDependencies, blockThreads
+        );
     }
 
     private void printThreadWithLock(ThreadEntity threadEntity, ThreadBlockReason threadBlockReason, Map<Instance, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
@@ -850,7 +868,7 @@ public class AnalyzeDorisFeHprof {
 
         @Override
         public String toString() {
-            return lockMethod + " lock: " + dbTable;
+            return lockMethod + " lock: \"" + dbTable + "\"";
         }
     }
 
@@ -872,10 +890,14 @@ public class AnalyzeDorisFeHprof {
     private static class ThreadBlockReason {
         ThreadEntity threadEntity;
         BlockingReason blockingReason;
-        List<TableLockInfo> tableLockInfos = new ArrayList<>();
 
         public ThreadBlockReason(ThreadEntity threadEntity) {
             this.threadEntity = threadEntity;
+        }
+
+        @Override
+        public String toString() {
+            return threadEntity.threadName + " blocked at " + (blockingReason.lockMethod.isRead ? "read " : "write ") + blockingReason.dbTable;
         }
     }
 
@@ -966,28 +988,55 @@ public class AnalyzeDorisFeHprof {
             this.threadEntity = threadEntity;
             this.sync = sync;
         }
+
+        @Override
+        public String toString() {
+            return threadEntity.threadName + (isRead ? " read" : " write");
+        }
     }
 
     private static class ThreadDepends {
-        ThreadSync threadSync;
-        DbTable dbTable;
+        ThreadSync holdSync;
+        DbTable holdSyncDbTable;
+        ThreadSync blockedSync;
+        DbTable blockedSyncDbTable;
         Map<Long, ThreadDepends> depends = Maps.newLinkedHashMap();
 
-        public ThreadDepends(ThreadSync threadSync, DbTable dbTable) {
-            this.threadSync = threadSync;
-            this.dbTable = dbTable;
+        public ThreadDepends(ThreadSync holdSync, DbTable holdSyncDbTable, ThreadSync blockedSync, DbTable blockedSyncDbTable) {
+            this.holdSync = holdSync;
+            this.holdSyncDbTable = holdSyncDbTable;
+            this.blockedSync = blockedSync;
+            this.blockedSyncDbTable = blockedSyncDbTable;
+        }
+
+        @Override
+        public String toString() {
+            String str = holdSync != null
+                    ? holdSync.threadEntity.threadName
+                    : blockedSync.threadEntity.threadName;
+            str = '"' + str + '"';
+            if (holdSync != null) {
+                str += " hold " + (holdSync.isRead ? "read " : "write ") + '"' + holdSyncDbTable + '"';
+            }
+            if (blockedSync != null) {
+                if (holdSync != null) {
+                    str += ",";
+                }
+                str += " blocked at " + (blockedSync.isRead ? "read " : "write ") + '"' + blockedSyncDbTable + '"';
+            }
+            return str;
         }
     }
 
     public static class DeadLockDepends extends ThreadDepends {
-        public DeadLockDepends(ThreadSync threadSync, DbTable dbTable) {
-            super(threadSync, dbTable);
+        public DeadLockDepends(ThreadSync holdSync, DbTable holdSyncDbTable, ThreadSync blockedSync, DbTable blockedSyncDbTable) {
+            super(holdSync, holdSyncDbTable, blockedSync, blockedSyncDbTable);
         }
     }
 
     public static class RunningThreadDepends extends ThreadDepends {
-        public RunningThreadDepends(ThreadSync threadSync) {
-            super(threadSync, null);
+        public RunningThreadDepends(ThreadSync holdSync, DbTable holdSyncDbTable) {
+            super(holdSync, holdSyncDbTable, null, null);
         }
     }
 
