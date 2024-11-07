@@ -1,5 +1,7 @@
 package org.apache.doris.fe.dump;
 
+import org.apache.doris.fe.dump.util.TopologySort;
+
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -329,6 +331,9 @@ public class AnalyzeDorisFeHprof {
             System.out.println("    block depends tree:");
             printThreadDependsTree(depends, 1);
 
+            System.out.println("    events topology order:");
+            printEventTimeline(depends);
+
             printStackFrames(threadBlockReason.threadEntity);
             System.out.println();
         }
@@ -338,6 +343,45 @@ public class AnalyzeDorisFeHprof {
             printThreadWithLock(nonBlockingThread, null, lockHolders, tableLockDependencies);
             printStackFrames(nonBlockingThread);
             System.out.println();
+        }
+    }
+
+    private void printEventTimeline(ThreadDepends root) {
+        TopologySort<String> topologySort = new TopologySort<>();
+        addEvent(topologySort, null, root);
+
+        List<String> sort = topologySort.sort();
+        for (String event : sort) {
+            System.out.println("       " + event);
+        }
+        System.out.println();
+    }
+
+    private void addEvent(TopologySort<String> topologySort, ThreadDepends preDepends, ThreadDepends currentDepends) {
+        if (preDepends != null) {
+            if (currentDepends.holdSync != null) {
+                topologySort.addPartialOrder(
+                        currentDepends.formatThreadName() + " " + currentDepends.formatHoldSync(),
+                        preDepends.formatThreadName() + " " + preDepends.formatBlockedSync()
+                );
+            } else {
+                topologySort.addPartialOrder(
+                        currentDepends.formatThreadName() + " " + currentDepends.formatBlockedSync(),
+                        preDepends.formatThreadName() + " " + preDepends.formatBlockedSync()
+                );
+            }
+        }
+
+        if (currentDepends.holdSync != null && currentDepends.blockedSync != null) {
+            String threadName = currentDepends.formatThreadName();
+            topologySort.addPartialOrder(
+                    threadName + " " + currentDepends.formatHoldSync(),
+                    threadName + " " + currentDepends.formatBlockedSync()
+            );
+        }
+
+        for (ThreadDepends nextDepends : currentDepends.depends.values()) {
+            addEvent(topologySort, currentDepends, nextDepends);
         }
     }
 
@@ -1009,20 +1053,35 @@ public class AnalyzeDorisFeHprof {
             this.blockedSyncDbTable = blockedSyncDbTable;
         }
 
-        @Override
-        public String toString() {
+        public String formatThreadName() {
             String str = holdSync != null
                     ? holdSync.threadEntity.threadName
                     : blockedSync.threadEntity.threadName;
             str = '"' + str + '"';
+            return str;
+        }
+
+        public String formatHoldSync() {
+            return "hold " + (holdSync.isRead ? "read " : "write ") + '"' + holdSyncDbTable + '"';
+        }
+
+        public String formatBlockedSync() {
+            return "blocked at " + (blockedSync.isRead ? "read " : "write ") + '"' + blockedSyncDbTable + '"';
+        }
+
+        @Override
+        public String toString() {
+            String str = formatThreadName();
             if (holdSync != null) {
-                str += " hold " + (holdSync.isRead ? "read " : "write ") + '"' + holdSyncDbTable + '"';
+                str += " " + formatHoldSync();
             }
             if (blockedSync != null) {
                 if (holdSync != null) {
                     str += ",";
                 }
-                str += " blocked at " + (blockedSync.isRead ? "read " : "write ") + '"' + blockedSyncDbTable + '"';
+                str += " ";
+
+                str += formatBlockedSync();
             }
             return str;
         }

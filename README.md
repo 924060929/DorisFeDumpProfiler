@@ -30,7 +30,7 @@ java -jar DorisFeDumpProfiler-*.jar fe.hprof
 
 分析结果主要打印出
 - Locks: 每个表锁的持有、排队线程
-- Threads: 每个线程持有的锁、阻塞的锁、锁依赖链路、是否产生死锁、栈帧、queryId、loadId
+- Threads: 每个线程持有的锁、阻塞的锁、锁依赖链路、是否产生死锁、栈帧、queryId、loadId、事件拓扑顺序
 - Queries: 每个查询线程对应的SQL
 
 ```angular2html
@@ -66,6 +66,15 @@ trade.klines_mv_1h lock:
                 "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
                    "mysql-nio-pool-2" hold read "trade.klines_mv_1d", blocked at read "trade.klines_1m"
                       "thrift-server-pool-4" blocked at write "trade.klines_1m" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "tablet checker" blocked at read "trade.klines_1m"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -87,6 +96,15 @@ trade.klines_mv_1h lock:
                 "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
                    "mysql-nio-pool-2" hold read "trade.klines_mv_1d", blocked at read "trade.klines_1m"
                       "thrift-server-pool-4" blocked at write "trade.klines_1m" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "PartitionInfoCollector" blocked at read "trade.klines_1m"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -109,6 +127,14 @@ trade.klines_mv_1h lock:
              "mysql-nio-pool-2" hold read "trade.klines_mv_1d", blocked at read "trade.klines_1m"
                 "thrift-server-pool-4" blocked at write "trade.klines_1m"
                    "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m", blocked at read "trade.klines_mv_1d" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -152,6 +178,14 @@ trade.klines_mv_1h lock:
              "thrift-server-pool-4" blocked at write "trade.klines_1m"
                 "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m", blocked at read "trade.klines_mv_1d"
                    "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -179,6 +213,15 @@ trade.klines_mv_1h lock:
                 "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
                    "mysql-nio-pool-2" hold read "trade.klines_mv_1d", blocked at read "trade.klines_1m"
                       "thrift-server-pool-4" blocked at write "trade.klines_1m" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "tablet stat mgr" blocked at read "trade.klines_1m"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -200,6 +243,15 @@ trade.klines_mv_1h lock:
                 "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
                    "mysql-nio-pool-2" hold read "trade.klines_mv_1d", blocked at read "trade.klines_1m"
                       "thrift-server-pool-4" blocked at write "trade.klines_1m" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "report-thread" blocked at read "trade.klines_1m"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -221,6 +273,14 @@ trade.klines_mv_1h lock:
              "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
                 "mysql-nio-pool-2" hold read "trade.klines_mv_1d", blocked at read "trade.klines_1m"
                    "thrift-server-pool-4" blocked at write "trade.klines_1m" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -257,6 +317,14 @@ trade.klines_mv_1h lock:
              "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m", blocked at read "trade.klines_mv_1d"
                 "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
                    "mysql-nio-pool-2" hold read "trade.klines_mv_1d", blocked at read "trade.klines_1m" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -300,6 +368,15 @@ trade.klines_mv_1h lock:
                 "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
                    "mysql-nio-pool-2" hold read "trade.klines_mv_1d", blocked at read "trade.klines_1m"
                       "thrift-server-pool-4" blocked at write "trade.klines_1m" (Dead lock)
+    events topology order:
+       "mysql-nio-pool-2" hold read "trade.klines_mv_1d"
+       "mtmv-task-execute-1-thread-2" hold read "trade.klines_1m"
+       "mtmv-task-execute-1-thread-9" blocked at write "trade.klines_mv_1d"
+       "thrift-server-pool-4" blocked at write "trade.klines_1m"
+       "mtmv-task-execute-1-thread-2" blocked at read "trade.klines_mv_1d"
+       "Analysis Job Executor-0" blocked at read "trade.klines_1m"
+       "mysql-nio-pool-2" blocked at read "trade.klines_1m"
+
 
     jdk.internal.misc.Unsafe.park(Native Method)
     java.util.concurrent.locks.LockSupport.park(LockSupport.java:211)
@@ -350,5 +427,5 @@ show partitions from klines_mv_1d
     catalog:      internal
     db:           __internal_schema
     sql:
-SELECT SUBSTRING(CAST(MIN(`high_price`) AS STRING), 1, 1024) as min, SUBSTRING(CAST(MAX(`high_price`) AS STRING), 1, 1024) as max FROM `trade`.`klines_1m`
+SELECT SUBSTRING(CAST(MIN(`high_price`) AS STRING), 1, 1024) as min, SUBSTRING(CAST(MAX(`high_price`) AS STRING), 1, 1024) as max FROM `trade`.`klines_1m` 
 ```
