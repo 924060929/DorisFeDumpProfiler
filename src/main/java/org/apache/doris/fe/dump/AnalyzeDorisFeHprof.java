@@ -749,7 +749,7 @@ public class AnalyzeDorisFeHprof {
                     if (localVarClass == null) {
                         continue;
                     }
-                    if (hasSuperClass(localVarClass, "org.apache.doris.catalog.OlapTable")) {
+                    if (hasSuperClass(localVarClass, "org.apache.doris.catalog.Table")) {
                         SyncFrame syncFrame = findSyncFrame(stackFrames, i - 1);
                         if (syncFrame == null) {
                             return;
@@ -781,7 +781,11 @@ public class AnalyzeDorisFeHprof {
             String info = stackFrames.get(i).toString();
             if (info.contains("java.util.concurrent.locks.ReentrantReadWriteLock$ReadLock.lock(")) {
                 return new LockMethod(true, false);
+            } else if (info.contains("java.util.concurrent.locks.ReentrantReadWriteLock$ReadLock.tryLock(")) {
+                return new LockMethod(true, false);
             } else if (info.contains("java.util.concurrent.locks.ReentrantReadWriteLock$WriteLock.lock")) {
+                return new LockMethod(false, true);
+            } else if (info.contains("java.util.concurrent.locks.ReentrantReadWriteLock$WriteLock.tryLock")) {
                 return new LockMethod(false, true);
             }
         }

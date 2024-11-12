@@ -27,6 +27,9 @@ public class StringInstanceUtils {
 
 
     public static String getDetailsString(Instance instance) {
+        if (instance == null) {
+            return null;
+        }
         // TODO [Tomas]: cache computed string per heap
         Collection<ProviderClassPair> pairs = getCompatibleProviders(instance.getJavaClass());
         for (ProviderClassPair pair : pairs) {
