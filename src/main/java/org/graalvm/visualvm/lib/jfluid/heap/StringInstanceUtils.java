@@ -1,8 +1,11 @@
 package org.graalvm.visualvm.lib.jfluid.heap;
 
+import org.apache.doris.fe.dump.util.ScriptUtils;
+
 import org.graalvm.visualvm.lib.profiler.heapwalk.details.api.StringDecoder;
 import org.graalvm.visualvm.lib.profiler.heapwalk.details.spi.DetailsProvider;
 import org.graalvm.visualvm.lib.profiler.heapwalk.details.spi.DetailsUtils;
+import org.graalvm.visualvm.lib.profiler.oql.engine.api.OQLEngine;
 import org.openide.util.Lookup;
 import org.openide.util.LookupEvent;
 import org.openide.util.LookupListener;
@@ -25,17 +28,27 @@ public class StringInstanceUtils {
     public static final String STRING_MASK = "java.lang.String";                           // NOI18N
     public static final String BUILDERS_MASK = "java.lang.AbstractStringBuilder+";         // NOI18N
 
+    public static String getDetailsString(Object instance) {
+        if (instance instanceof Map && instance.getClass().getSimpleName().equals("ScriptObjectMirror")) {
+            OQLEngine oqlEngine = ScriptUtils.engine.get();
+            if (oqlEngine != null) {
+                instance = oqlEngine.unwrapJavaObject(instance, true);
+            }
+        }
 
-    public static String getDetailsString(Instance instance) {
         if (instance == null) {
             return null;
         }
+        if (!(instance instanceof Instance)) {
+            return null;
+        }
+
         // TODO [Tomas]: cache computed string per heap
-        Collection<ProviderClassPair> pairs = getCompatibleProviders(instance.getJavaClass());
+        Collection<ProviderClassPair> pairs = getCompatibleProviders(((Instance) instance).getJavaClass());
         for (ProviderClassPair pair : pairs) {
             String classKey = pair.classKey;
             if (pair.subclasses) classKey += "+";                               // NOI18N
-            String string = getDetailsString(classKey, instance);
+            String string = getDetailsString(classKey, (Instance) instance);
             if (string != null) return string;
         }
         return null;

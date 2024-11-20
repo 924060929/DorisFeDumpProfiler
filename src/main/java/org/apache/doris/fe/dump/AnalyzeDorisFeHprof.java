@@ -1,7 +1,10 @@
 package org.apache.doris.fe.dump;
 
+import org.apache.doris.fe.dump.util.ScriptUtils;
 import org.apache.doris.fe.dump.util.TopologySort;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -17,6 +20,7 @@ import static org.apache.doris.fe.dump.AnalyzeDorisFeHprof.State.TERMINATED;
 import static org.apache.doris.fe.dump.AnalyzeDorisFeHprof.State.TIMED_WAITING;
 import static org.apache.doris.fe.dump.AnalyzeDorisFeHprof.State.WAITING;
 import org.graalvm.visualvm.lib.jfluid.heap.ArrayItemValue;
+import org.graalvm.visualvm.lib.jfluid.heap.Field;
 import org.graalvm.visualvm.lib.jfluid.heap.GCRoot;
 import static org.graalvm.visualvm.lib.jfluid.heap.GCRoot.JNI_LOCAL;
 import org.graalvm.visualvm.lib.jfluid.heap.Heap;
@@ -53,6 +57,7 @@ import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class AnalyzeDorisFeHprof {
     public static final Option methodOpt = Option.builder("m")
@@ -114,11 +119,20 @@ public class AnalyzeDorisFeHprof {
 
     private void executeOql(String query) throws OQLException {
         OQLEngine oqlEngine = new OQLEngine(heap);
+        ScriptUtils.registerFunctions(oqlEngine);
+
         System.out.println("===== OQL Result =====");
+        AtomicLong rowCount = new AtomicLong();
+
         oqlEngine.executeQuery(query, new ObjectVisitor() {
             @Override
             public boolean visit(Object o) {
-                System.out.println(o);
+                System.out.println("=== Row " + rowCount.incrementAndGet() + " ===");
+                try {
+                    System.out.println(toJsonString(o));
+                } catch (JsonProcessingException e) {
+                    throw new RuntimeException(e);
+                }
                 return false;
             }
         });
@@ -940,7 +954,7 @@ public class AnalyzeDorisFeHprof {
         return null;
     }
 
-    private boolean hasSuperClass(JavaClass javaClass, String className) {
+    public static boolean hasSuperClass(JavaClass javaClass, String className) {
         JavaClass clazz = javaClass;
         while (clazz != null) {
             if (clazz.getName().equals(className)) {
@@ -1315,6 +1329,183 @@ public class AnalyzeDorisFeHprof {
         public String toString() {
             return stackTraceElement.toString();
         }
+    }
+
+    public static String toJsonString(Object obj) throws JsonProcessingException {
+        return toJsonString(obj, 4);
+    }
+
+    public static String toJsonString(Object obj, int maxLevel) throws JsonProcessingException {
+        Object javaObjectOrMap = toJavaObject(obj, maxLevel, 0);
+        ObjectMapper objectMapper = new ObjectMapper();
+        return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(javaObjectOrMap);
+    }
+
+    public static Object normalize(Object obj, int maxLevel, int currentLevel) {
+        if (obj == null) {
+            return null;
+        }
+        if (obj instanceof Map) {
+            Map<Object, Object> copy = new LinkedHashMap<>();
+            Map<Object, Object> map = (Map) obj;
+            for (Entry<Object, Object> entry : map.entrySet()) {
+                copy.put(
+                        normalize(entry.getKey(), maxLevel, currentLevel + 1),
+                        normalize(entry.getValue(), maxLevel, currentLevel + 1)
+
+                );
+            }
+            return copy;
+        } else if (obj instanceof List) {
+            List<Object> copy = new ArrayList<>();
+            List<Object> list = (List) obj;
+            for (Object o : list) {
+                copy.add(normalize(o, maxLevel, currentLevel + 1));
+            }
+            return copy;
+        } else if (obj instanceof Set) {
+            List<Object> copy = new ArrayList<>();
+            Set<Object> set = (Set) obj;
+            for (Object o : set) {
+                copy.add(normalize(o, maxLevel, currentLevel + 1));
+            }
+            return copy;
+        } else if (obj instanceof ScriptUtils.Entry) {
+            Map<Object, Object> map = new LinkedHashMap<>();
+            ScriptUtils.Entry entry = (ScriptUtils.Entry) obj;
+            map.put(
+                    normalize(entry.getKey(), maxLevel, currentLevel + 1),
+                    normalize(entry.getValue(), maxLevel, currentLevel + 1)
+            );
+            return map;
+        }
+        if (!(obj instanceof Instance)) {
+            return obj;
+        }
+
+        Instance instance = (Instance) obj;
+        JavaClass javaClass = instance.getJavaClass();
+        if (hasSuperClass(javaClass, "java.lang.String")) {
+            return StringInstanceUtils.getDetailsString(instance);
+        } else if (hasSuperClass(javaClass, "org.apache.doris.thrift.TUniqueId")) {
+            return printId((Long) instance.getValueOfField("hi"), (Long) instance.getValueOfField("lo"));
+        } else if (hasSuperClass(javaClass, "org.apache.doris.proto.Types.PUniqueId")) {
+            return printId((Long) instance.getValueOfField("hi_"), (Long) instance.getValueOfField("lo_"));
+        }
+
+        if (currentLevel > maxLevel) {
+            return ((Instance) obj).getJavaClass().getName() + "#" + ((Instance) obj).getInstanceId();
+        }
+        if (hasSuperClass(javaClass, "java.util.HashMap")) {
+            Map<Object, Object> map = new LinkedHashMap<>();
+            ObjectArrayInstance table = (ObjectArrayInstance) instance.getValueOfField("table");
+            if (table == null) {
+                return map;
+            }
+            for (ArrayItemValue item : table.getItems()) {
+                Instance entry = item.getInstance();
+                while (entry != null) {
+                    Object key = entry.getValueOfField("key");
+                    Object value = entry.getValueOfField("value");
+                    map.put(normalize(key, maxLevel, currentLevel + 1), normalize(value, maxLevel, currentLevel + 1));
+
+                    entry = (Instance) entry.getValueOfField("next");
+                }
+            }
+            return map;
+        } else if (hasSuperClass(javaClass, "java.util.concurrent.ConcurrentHashMap")) {
+            Map<Object, Object> map = new LinkedHashMap<>();
+            ObjectArrayInstance table = (ObjectArrayInstance) instance.getValueOfField("table");
+            if (table == null) {
+                return map;
+            }
+            for (ArrayItemValue item : table.getItems()) {
+                Instance entry = item.getInstance();
+                while (entry != null) {
+                    Object key = entry.getValueOfField("key");
+                    Object value = entry.getValueOfField("val");
+                    map.put(normalize(key, maxLevel, currentLevel + 1), normalize(value, maxLevel, currentLevel + 1));
+
+                    entry = (Instance) entry.getValueOfField("next");
+                }
+            }
+            return map;
+
+        } else if (hasSuperClass(javaClass, "com.google.common.collect.RegularImmutableMap")) {
+            ObjectArrayInstance listObj = (ObjectArrayInstance) instance.getValueOfField("table");
+            Map<Object, Object> map = new LinkedHashMap<>();
+            for (int i = 0; i < listObj.getItems().size(); i++) {
+                ArrayItemValue item = listObj.getItems().get(i);
+                Instance entry = item.getInstance();
+                if (entry == null) {
+                    continue;
+                }
+                Object key = entry.getValueOfField("key");
+                Object value = entry.getValueOfField("value");
+                map.put(normalize(key, maxLevel, currentLevel + 1), normalize(value, maxLevel, currentLevel + 1));
+            }
+            return map;
+        } else if (hasSuperClass(javaClass, "java.util.HashSet")) {
+            List<Object> set = new ArrayList<>();
+            Instance map = (Instance) javaClass.getValueOfStaticField("map");
+            ObjectArrayInstance table = (ObjectArrayInstance) instance.getValueOfField("table");
+            if (table == null) {
+                return set;
+            }
+            for (ArrayItemValue item : table.getItems()) {
+                Instance entry = item.getInstance();
+                while (entry != null) {
+                    Object key = entry.getValueOfField("key");
+                    set.add(normalize(key, maxLevel, currentLevel + 1));
+                    entry = (Instance) entry.getValueOfField("next");
+                }
+            }
+            return map;
+        } else if (hasSuperClass(javaClass, "java.util.ArrayList")) {
+            Integer size = (Integer) instance.getValueOfField("size");
+            ObjectArrayInstance listObj = (ObjectArrayInstance) instance.getValueOfField("elementData");
+            List<Object> list = new ArrayList<>();
+            for (int i = 0; i < size; i++) {
+                ArrayItemValue item = listObj.getItems().get(i);
+                list.add(normalize(item.getInstance(), maxLevel, currentLevel + 1));
+            }
+            return list;
+        } else if (hasSuperClass(javaClass, "com.google.common.collect.RegularImmutableList")) {
+            ObjectArrayInstance listObj = (ObjectArrayInstance) instance.getValueOfField("array");
+            List<Object> list = new ArrayList<>();
+            for (int i = 0; i < listObj.getItems().size(); i++) {
+                ArrayItemValue item = listObj.getItems().get(i);
+                list.add(normalize(item.getInstance(), maxLevel, currentLevel + 1));
+            }
+            return list;
+        } else if (hasSuperClass(javaClass, "com.google.common.collect.RegularImmutableSet")) {
+            ObjectArrayInstance listObj = (ObjectArrayInstance) instance.getValueOfField("elements");
+            List<Object> list = new ArrayList<>();
+            for (int i = 0; i < listObj.getItems().size(); i++) {
+                ArrayItemValue item = listObj.getItems().get(i);
+                list.add(normalize(item.getInstance(), maxLevel, currentLevel + 1));
+            }
+            return list;
+        } else if (instance instanceof ObjectArrayInstance) {
+            ObjectArrayInstance listObj = (ObjectArrayInstance) instance;
+            List<Object> list = new ArrayList<>();
+            for (int i = 0; i < listObj.getItems().size(); i++) {
+                ArrayItemValue item = listObj.getItems().get(i);
+                list.add(normalize(item.getInstance(), maxLevel, currentLevel + 1));
+            }
+            return list;
+        } else {
+            Map<Object, Object> map = new LinkedHashMap<>();
+            for (Field field : javaClass.getFields()) {
+                Object value = instance.getValueOfField(field.getName());
+                map.put(field.getName(), toJavaObject(value, maxLevel, currentLevel));
+            }
+            return map;
+        }
+    }
+
+    public static Object toJavaObject(Object obj, int maxLevel, int currentLevel) {
+        return normalize(obj, maxLevel, currentLevel + 1);
     }
 
     public static String formatDate(long time) {
