@@ -6,6 +6,10 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.DefaultParser;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
 import static org.apache.doris.fe.dump.AnalyzeDorisFeHprof.State.BLOCKED;
 import static org.apache.doris.fe.dump.AnalyzeDorisFeHprof.State.NEW;
 import static org.apache.doris.fe.dump.AnalyzeDorisFeHprof.State.RUNNABLE;
@@ -17,6 +21,7 @@ import org.graalvm.visualvm.lib.jfluid.heap.GCRoot;
 import static org.graalvm.visualvm.lib.jfluid.heap.GCRoot.JNI_LOCAL;
 import org.graalvm.visualvm.lib.jfluid.heap.Heap;
 import org.graalvm.visualvm.lib.jfluid.heap.HeapFactory;
+import org.graalvm.visualvm.lib.jfluid.heap.HeapSummary;
 import org.graalvm.visualvm.lib.jfluid.heap.Instance;
 import org.graalvm.visualvm.lib.jfluid.heap.JavaClass;
 import org.graalvm.visualvm.lib.jfluid.heap.JavaFrameGCRoot;
@@ -24,21 +29,48 @@ import org.graalvm.visualvm.lib.jfluid.heap.JniLocalGCRoot;
 import org.graalvm.visualvm.lib.jfluid.heap.ObjectArrayInstance;
 import org.graalvm.visualvm.lib.jfluid.heap.StringInstanceUtils;
 import org.graalvm.visualvm.lib.jfluid.heap.ThreadObjectGCRoot;
+import org.graalvm.visualvm.lib.profiler.oql.engine.api.OQLEngine;
+import org.graalvm.visualvm.lib.profiler.oql.engine.api.OQLEngine.ObjectVisitor;
+import org.graalvm.visualvm.lib.profiler.oql.engine.api.OQLException;
 
 import java.io.File;
-import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.MathContext;
+import java.math.RoundingMode;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.net.URLStreamHandlerFactory;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.PriorityQueue;
 import java.util.Set;
 
 public class AnalyzeDorisFeHprof {
-    private static final String LOCAL_VARIABLE = "local variables";
+    public static final Option methodOpt = Option.builder("m")
+            .required(false)
+            .hasArg(true)
+            .longOpt("method")
+            .desc("select which method to invoke")
+            .build();
+    public static final Option executeOpt = Option.builder("o")
+            .required(false)
+            .hasArg(true)
+            .longOpt("oql")
+            .desc("the oql string")
+            .build();
+
+    public static final Options options = new Options()
+            .addOption(methodOpt)
+            .addOption(executeOpt);
 
     private final Heap heap;
     private Map<Long, ThreadEntity> threadObjIdToThread;
@@ -53,20 +85,52 @@ public class AnalyzeDorisFeHprof {
         this.heap = heap;
     }
 
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) throws Throwable {
         if (args.length == 0) {
             System.out.println("Usage: java -jar DorisFeDumpProfiler-*.jar fe.hprof");
             System.exit(1);
         }
         Heap heap = HeapFactory.createHeap(new File(args[0]));
-        new AnalyzeDorisFeHprof(heap).analyze();
+        AnalyzeDorisFeHprof analyzeDorisFeHprof = new AnalyzeDorisFeHprof(heap);
+        analyzeDorisFeHprof.basicAnalyze();
+
+        CommandLine cmdLine = new DefaultParser().parse(options, args, false);
+        String method = cmdLine.getParsedOptionValue(methodOpt);
+        if ("summary".equals(method)) {
+            analyzeDorisFeHprof.analyzeSummary();
+        } else if ("execute".equals(method)) {
+            String oql = cmdLine.getParsedOptionValue(executeOpt);
+            if (oql == null) {
+                throw new IllegalArgumentException("Missing oql argument");
+            }
+
+            ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
+            Thread.currentThread().setContextClassLoader(new CustomClassLoader(new URL[]{}, contextClassLoader));
+            analyzeDorisFeHprof.executeOql(oql);
+        } else {
+            analyzeDorisFeHprof.defaultAnalyze();
+        }
     }
 
-    public void analyze() {
+    private void executeOql(String query) throws OQLException {
+        OQLEngine oqlEngine = new OQLEngine(heap);
+        System.out.println("===== OQL Result =====");
+        oqlEngine.executeQuery(query, new ObjectVisitor() {
+            @Override
+            public boolean visit(Object o) {
+                System.out.println(o);
+                return false;
+            }
+        });
+    }
+
+    public void basicAnalyze() {
         threadStackFrameLocals = computeJavaFrameMap(heap.getGCRoots());
         threadObjIdToThread = getThreads(heap);
         threadObjIdToContextId = analyzeContextId();
+    }
 
+    public void defaultAnalyze() {
         blockThreads = analyzeBlockingThreads();
         tableLockDependencies = bindTableLockToSyncByBlockReason(blockThreads);
 
@@ -82,6 +146,69 @@ public class AnalyzeDorisFeHprof {
 
         printQueries();
         System.out.println();
+    }
+
+    public void analyzeSummary() {
+        printSummary();
+
+        System.out.println();
+        printAllThreads();
+
+        System.out.println();
+        printBiggestClassObjects();
+    }
+
+    private void printBiggestClassObjects() {
+        System.out.println("===== Class =====");
+
+        PriorityQueue<JavaClass> queue = new PriorityQueue<>(
+                Comparator.comparing(JavaClass::getAllInstancesSize).reversed()
+        );
+        queue.addAll(heap.getAllClasses());
+
+        while (!queue.isEmpty()) {
+            JavaClass javaClass = queue.poll();
+            String name = javaClass.getName();
+            int instancesCount = javaClass.getInstancesCount();
+            long allInstancesSize = javaClass.getAllInstancesSize();
+            // not print < 1M
+            if (allInstancesSize < 1024L * 1024) {
+                break;
+            }
+            System.out.println(name + ": " + "instancesCount: " + instancesCount + ", allInstancesSize: "
+                    + allInstancesSize + (allInstancesSize > 0 ? "(" + formatBytes(allInstancesSize) + ")": ""));
+            // long retainedSizeByClass = javaClass.getRetainedSizeByClass();
+            // System.out.println(name + ": " + "instancesCount: " + instancesCount + ", allInstancesSize: "
+            //         + allInstancesSize + (allInstancesSize > 0 ? "(" + formatBytes(allInstancesSize) + ")": "")
+            //         + ", retainedSizeByClass: " + retainedSizeByClass + (retainedSizeByClass > 0 ? "(" + formatBytes(retainedSizeByClass) + ")" : ""));
+        }
+    }
+
+    private void printSummary() {
+        HeapSummary summary = heap.getSummary();
+
+        System.out.println("===== Summary =====");
+        System.out.println("Heap dump time: " + formatDate(summary.getTime()));
+        long totalLiveBytes = summary.getTotalLiveBytes();
+        System.out.println("totalLiveBytes: " + totalLiveBytes + (totalLiveBytes > 0 ? "(" + formatBytes(totalLiveBytes) + ")" : ""));
+
+        long totalLiveInstances = summary.getTotalLiveInstances();
+        System.out.println("totalLiveInstances: " + totalLiveInstances);
+
+        long totalAllocatedBytes = summary.getTotalAllocatedBytes();
+        System.out.println("totalAllocatedBytes: " + totalAllocatedBytes + (totalAllocatedBytes > 0 ? "(" + formatBytes(totalAllocatedBytes) + ")" : ""));
+
+        long totalAllocatedInstances = summary.getTotalAllocatedInstances();
+        System.out.println("totalAllocatedInstances: " + totalAllocatedInstances);
+    }
+
+    private void printAllThreads() {
+        System.out.println("===== Threads =====");
+        for (ThreadEntity threadEntity : threadObjIdToThread.values()) {
+            printThreadWithContextId(threadEntity);
+            printStackFrames(threadEntity);
+            System.out.println();
+        }
     }
 
     private ThreadEntity toThreadEntity(ThreadObjectGCRoot thread) {
@@ -334,14 +461,14 @@ public class AnalyzeDorisFeHprof {
             System.out.println("    events topology order:");
             printEventTimeline(depends);
 
-            printStackFrames(threadBlockReason.threadEntity);
+            printStackFrames(threadBlockReason.threadEntity, true);
             System.out.println();
         }
 
         Set<ThreadEntity> nonBlockingThreads = collectNonBlockingThreads(blockThreads, lockHolders, tableLockDependencies);
         for (ThreadEntity nonBlockingThread : nonBlockingThreads) {
             printThreadWithLock(nonBlockingThread, null, lockHolders, tableLockDependencies);
-            printStackFrames(nonBlockingThread);
+            printStackFrames(nonBlockingThread, true);
             System.out.println();
         }
     }
@@ -386,8 +513,12 @@ public class AnalyzeDorisFeHprof {
     }
 
     private void printStackFrames(ThreadEntity threadEntity) {
+        printStackFrames(threadEntity, false);
+    }
+
+    private void printStackFrames(ThreadEntity threadEntity, boolean printEmptyLinePrefix) {
         List<StackFrameEntity> stackFrames = threadEntity.stackFrames;
-        if (stackFrames != null && !stackFrames.isEmpty()) {
+        if (printEmptyLinePrefix && stackFrames != null && !stackFrames.isEmpty()) {
             System.out.println();
         }
         for (StackFrameEntity stackFrame : stackFrames) {
@@ -1183,6 +1314,67 @@ public class AnalyzeDorisFeHprof {
         @Override
         public String toString() {
             return stackTraceElement.toString();
+        }
+    }
+
+    public static String formatDate(long time) {
+        return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date(time));
+    }
+
+    public static String formatBytes(long bytes) {
+        if (bytes >= 1024L * 1024 * 1024 * 1024) {
+            return new BigDecimal(bytes).divide(BigDecimal.valueOf(1024L * 1024 * 1024 * 1024), new MathContext(3, RoundingMode.HALF_UP)) + "T";
+        } else if (bytes >= 1024L * 1024 * 1024) {
+            return new BigDecimal(bytes).divide(BigDecimal.valueOf(1024L * 1024 * 1024), new MathContext(3, RoundingMode.HALF_UP)) + "G";
+        } else if (bytes >= 1024L * 1024) {
+            return new BigDecimal(bytes).divide(BigDecimal.valueOf(1024L * 1024), new MathContext(3, RoundingMode.HALF_UP)) + "M";
+        } else if (bytes >= 1024L) {
+            return new BigDecimal(bytes).divide(BigDecimal.valueOf(1024L), new MathContext(3, RoundingMode.HALF_UP)) + "K";
+        } else {
+            return bytes + "B";
+        }
+    }
+
+    public static class CustomClassLoader extends URLClassLoader {
+
+        public CustomClassLoader(URL[] urls, ClassLoader parent) {
+            super(urls, parent);
+        }
+
+        public CustomClassLoader(URL[] urls) {
+            super(urls);
+        }
+
+        public CustomClassLoader(URL[] urls, ClassLoader parent, URLStreamHandlerFactory factory) {
+            super(urls, parent, factory);
+        }
+
+        @Override
+        protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            // Avoid loading JDK 14's Nashorn classes
+            if (name.startsWith("org.openjdk.nashorn.") && belowJdk14()) {
+                if (name.equals("org.openjdk.nashorn.api.scripting.NashornScriptEngineFactory")) {
+                    return super.loadClass("jdk.nashorn.api.scripting.NashornScriptEngineFactory");
+                }
+                return null;
+            }
+            return super.loadClass(name, resolve);
+        }
+
+        private boolean belowJdk14() {
+            String version = System.getProperty("java.version");
+            try {
+                String[] parts = version.split("\\.");
+                if (parts[0].equals("1")) { // 1.8.0_402
+                    return true;
+                } else if (Integer.valueOf(parts[0]) < 14) { // 11.0.25
+                    return true;
+                } else { // 17.0.13
+                    return false;
+                }
+            } catch (Throwable t) {
+                return false;
+            }
         }
     }
 }
