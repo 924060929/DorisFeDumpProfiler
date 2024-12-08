@@ -2,19 +2,22 @@ package org.apache.doris.fe.dump.util;
 
 import static org.apache.doris.fe.dump.AnalyzeDorisFeHprof.hasSuperClass;
 import org.graalvm.visualvm.lib.jfluid.heap.ArrayItemValue;
+import org.graalvm.visualvm.lib.jfluid.heap.HprofObjectUtils;
 import org.graalvm.visualvm.lib.jfluid.heap.Instance;
 import org.graalvm.visualvm.lib.jfluid.heap.JavaClass;
 import org.graalvm.visualvm.lib.jfluid.heap.ObjectArrayInstance;
 import org.graalvm.visualvm.lib.jfluid.heap.StringInstanceUtils;
+import org.graalvm.visualvm.lib.jfluid.heap.Value;
 import org.graalvm.visualvm.lib.profiler.oql.engine.api.OQLEngine;
 import org.graalvm.visualvm.lib.profiler.oql.engine.api.OQLException;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class ScriptUtils {
     public static final ThreadLocal<OQLEngine> engine = new ThreadLocal<>();
@@ -22,10 +25,23 @@ public class ScriptUtils {
     public static void registerFunctions(OQLEngine oqlEngine) throws OQLException {
         engine.set(oqlEngine);
         registerFunction(oqlEngine, "getFieldValue", 2);
+        registerFunction(oqlEngine, "getStaticFieldValue", 2);
         registerFunction(oqlEngine, "getString", 1);
         registerFunction(oqlEngine, "printId", 1);
         registerFunction(oqlEngine, "getMapEntries", 1);
         registerFunction(oqlEngine, "fromUnixtime", 1);
+
+        registerFunction(oqlEngine, "getRetainedSize", 1);
+        registerFunction(oqlEngine, "getReachableSize", 1);
+        registerFunction(oqlEngine, "isGcRoot", 1);
+        registerFunction(oqlEngine, "getSize", 1);
+        registerFunction(oqlEngine, "getInstanceId", 1);
+        registerFunction(oqlEngine, "getInstanceNumber", 1);
+        registerFunction(oqlEngine, "getNearestGCRootPointer", 1);
+        registerFunction(oqlEngine, "getReferences", 1);
+        registerFunction(oqlEngine, "getReferencesString", 1);
+        registerFunction(oqlEngine, "getReferencesGraph", 1);
+        registerFunction(oqlEngine, "getNearestGCRootPath", 1);
     }
 
     private static void registerFunction(OQLEngine oqlEngine, String name, int paramNum) throws OQLException {
@@ -90,7 +106,6 @@ public class ScriptUtils {
             return entries;
         } else if (hasSuperClass(javaClass, "com.google.common.collect.RegularImmutableMap")) {
             ObjectArrayInstance listObj = (ObjectArrayInstance) instance.getValueOfField("table");
-            Map<Object, Object> map = new LinkedHashMap<>();
             for (int i = 0; i < listObj.getItems().size(); i++) {
                 ArrayItemValue item = listObj.getItems().get(i);
                 Instance entry = item.getInstance();
@@ -107,26 +122,162 @@ public class ScriptUtils {
         }
     }
 
-    public static String getString(Object instance) {
-        instance = unwrapJavaObject(instance);
-        if (!(instance instanceof Instance)) {
+    public static String getString(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
             return null;
         }
-        return StringInstanceUtils.getDetailsString(instance);
+        return StringInstanceUtils.getDetailsString(obj);
     }
 
-    public static Object getFieldValue(Object instance, String name) {
-        instance = unwrapJavaObject(instance);
-        if (!(instance instanceof Instance)) {
+    public static Object getFieldValue(Object obj, String name) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
             return null;
         }
 
-        return ((Instance) instance).getValueOfField(name);
+        return ((Instance) obj).getValueOfField(name);
     }
 
-    public static String printId(Object instance) {
-        if (instance instanceof Map) {
-            Map<?, ?> map = (Map<?, ?>) instance;
+    public static Object getStaticFieldValue(Object obj, String name) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        return ((Instance) obj).getJavaClass().getValueOfStaticField(name);
+    }
+
+    public static Long getRetainedSize(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        return ((Instance) obj).getRetainedSize();
+    }
+
+    public static Long getReachableSize(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        return ((Instance) obj).getReachableSize();
+    }
+
+    public static boolean isGcRoot(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return false;
+        }
+        return ((Instance) obj).isGCRoot();
+    }
+
+    public static Long getSize(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        return ((Instance) obj).getSize();
+    }
+
+    public static Long getInstanceId(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        return ((Instance) obj).getInstanceId();
+    }
+
+    public static Integer getInstanceNumber(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        return ((Instance) obj).getInstanceNumber();
+    }
+
+    public static Instance getNearestGCRootPointer(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        return ((Instance) obj).getNearestGCRootPointer();
+    }
+
+    public static List<Value> getReferences(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        return ((Instance) obj).getReferences();
+    }
+
+    public static List<String> getReferencesString(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+
+        Instance instance = (Instance) obj;
+        List<Value> references = instance.getReferences();
+        List<String> refStrings = new ArrayList<>();
+        for (Value reference : references) {
+            if (reference.getDefiningInstance().getInstanceId() == instance.getInstanceId()) {
+                continue;
+            }
+            refStrings.add(HprofObjectUtils.getName(reference));
+        }
+        return refStrings;
+    }
+
+    public static List<RefNode> getReferencesGraph(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        Set<Long> instanceIds = new HashSet<>();
+        List<RefNode> graph = new ArrayList<>();
+        visitReferences((Instance) obj, instanceIds, graph);
+        return graph;
+    }
+
+    private static void visitReferences(Instance instance, Set<Long> instanceIds, List<RefNode> graph) {
+        instanceIds.add(instance.getInstanceId());
+
+        List<Value> references = instance.getReferences();
+        for (Value reference : references) {
+            if (instanceIds.contains(reference.getDefiningInstance().getInstanceId())) {
+                continue;
+            }
+
+            RefNode refNode = new RefNode(HprofObjectUtils.getName(reference), new ArrayList<>());
+            graph.add(refNode);
+            Instance ref = reference.getDefiningInstance();
+            visitReferences(ref, instanceIds, refNode.references);
+        }
+    }
+
+    public static List<String> getNearestGCRootPath(Object obj) {
+        obj = unwrapJavaObject(obj);
+        if (!(obj instanceof Instance)) {
+            return null;
+        }
+        Instance instance = (Instance) obj;
+        List<String> result = new ArrayList<>();
+        result.add(instance.getJavaClass().getName() + "#" + instance.getInstanceId());
+
+        Instance current = instance;
+        Instance next = instance.getNearestGCRootPointer();
+        while (next != null && next != current) {
+            result.add(next.getJavaClass().getName() + "#" + next.getInstanceId());
+            current = next;
+            next = current.getNearestGCRootPointer();
+        }
+        return result;
+    }
+
+    public static String printId(Object obj) {
+        if (obj instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) obj;
             Long lo = (Long) map.get("lo");
             if (lo == null) {
                 lo = (Long) map.get("lo_");
@@ -136,14 +287,14 @@ public class ScriptUtils {
                 hi = (Long) map.get("hi_");
             }
             return printId(hi, lo);
-        } else if (instance instanceof Instance) {
-            Long lo = (Long) ((Instance) instance).getValueOfField("lo");
+        } else if (obj instanceof Instance) {
+            Long lo = (Long) ((Instance) obj).getValueOfField("lo");
             if (lo == null) {
-                lo = (Long) ((Instance) instance).getValueOfField("lo_");
+                lo = (Long) ((Instance) obj).getValueOfField("lo_");
             }
-            Long hi = (Long) ((Instance) instance).getValueOfField("hi");
+            Long hi = (Long) ((Instance) obj).getValueOfField("hi");
             if (hi == null) {
-                hi = (Long) ((Instance) instance).getValueOfField("hi_");
+                hi = (Long) ((Instance) obj).getValueOfField("hi_");
             }
             return printId(hi, lo);
         }
@@ -189,6 +340,21 @@ public class ScriptUtils {
 
         public void setValue(Object value) {
             this.value = value;
+        }
+    }
+
+    private static class RefNode {
+        private final String name;
+        private final List<RefNode> references;
+
+        public RefNode(String name, List<RefNode> references) {
+            this.name = name;
+            this.references = references;
+        }
+
+        @Override
+        public String toString() {
+            return name;
         }
     }
 }
