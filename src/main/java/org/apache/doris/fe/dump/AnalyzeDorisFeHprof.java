@@ -252,6 +252,9 @@ public class AnalyzeDorisFeHprof {
     private List<StackFrameEntity> toStackFrameEntities(ThreadObjectGCRoot thread) {
         StackTraceElement[] stackTrace = thread.getStackTrace();
         Map<Integer, List<GCRoot>> frameToLocals = threadStackFrameLocals.get(thread);
+        if (frameToLocals == null) {
+            return new ArrayList<>();
+        }
 
         List<StackFrameEntity> stackFrameEntities = Lists.newArrayListWithCapacity(stackTrace.length);
         for (int i = 0; i < stackTrace.length; i++) {

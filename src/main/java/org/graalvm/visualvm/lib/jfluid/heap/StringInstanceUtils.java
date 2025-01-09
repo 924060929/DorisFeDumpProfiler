@@ -36,6 +36,11 @@ public class StringInstanceUtils {
             }
         }
 
+        if (instance instanceof PrimitiveArrayDump) {
+            char[] chars = ((PrimitiveArrayDump) instance).getChars(0, ((PrimitiveArrayDump) instance).getLength());
+            return String.valueOf(chars);
+        }
+
         if (instance == null) {
             return null;
         }
