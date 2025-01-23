@@ -1,5 +1,6 @@
 package org.apache.doris.fe.dump;
 
+import org.apache.doris.fe.dump.util.DumpUtils;
 import org.apache.doris.fe.dump.util.ScriptUtils;
 import org.apache.doris.fe.dump.util.TopologySort;
 
@@ -226,6 +227,15 @@ public class AnalyzeDorisFeHprof {
 
         long totalAllocatedInstances = summary.getTotalAllocatedInstances();
         System.out.println("totalAllocatedInstances: " + totalAllocatedInstances);
+
+        ThreadObjectGCRoot oomeThread = DumpUtils.getOOMEThread(heap);
+        if (oomeThread != null) {
+            try {
+                System.out.println("OutOfMemoryErrorThread: " + threadObjIdToThread.get(oomeThread.getInstance().getInstanceId()).threadName);
+            } catch (Throwable t) {
+
+            }
+        }
     }
 
     private void printAllThreads() {
