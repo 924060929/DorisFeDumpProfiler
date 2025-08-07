@@ -162,10 +162,10 @@ public class AnalyzeDorisFeHprof {
         tableLockDependencies = bindTableLockToSyncByBlockReason(blockThreads);
 
         // syncObj -> LockHolder
-        Map<Instance, LockHolder> lockHolders = analyzeHoldTableLockThreads(tableLockDependencies);
+        Map<Long, LockHolder> lockHolders = analyzeHoldTableLockThreads(tableLockDependencies);
 
-        Map<Instance, List<ThreadSync>> syncToWaitingThreads = analyzeAndPrintTableLockQueue(lockHolders,
-                tableLockDependencies);
+        Map<Long, List<ThreadSync>> syncToWaitingThreads = analyzeAndPrintTableLockQueue(
+                lockHolders, tableLockDependencies);
         System.out.println();
 
         printThreadsWithLock(blockThreads, lockHolders, tableLockDependencies, syncToWaitingThreads);
@@ -292,10 +292,10 @@ public class AnalyzeDorisFeHprof {
     }
 
     private static Map<ThreadObjectGCRoot, Map<Integer, List<GCRoot>>> computeJavaFrameMap(Collection<GCRoot> roots) {
-        Map<ThreadObjectGCRoot, Map<Integer,List<GCRoot>>> javaFrameMap = new HashMap();
+        Map<ThreadObjectGCRoot, Map<Integer,List<GCRoot>>> javaFrameMap = new HashMap<>();
         for (GCRoot root : roots) {
             ThreadObjectGCRoot threadObj;
-            Integer frameNo;
+            int frameNo;
 
             if (GCRoot.JAVA_FRAME.equals(root.getKind())) {
                 JavaFrameGCRoot frameGCroot = (JavaFrameGCRoot) root;
@@ -310,16 +310,14 @@ public class AnalyzeDorisFeHprof {
             }
 
             Map<Integer,List<GCRoot>> stackMap = javaFrameMap.get(threadObj);
-            List<GCRoot> locals;
-
             if (stackMap == null) {
-                stackMap = new HashMap();
+                stackMap = new HashMap<>();
                 javaFrameMap.put(threadObj, stackMap);
             }
-            locals = stackMap.get(frameNo);
+            List<GCRoot> locals = stackMap.get(frameNo);
             if (locals == null) {
-                locals = new ArrayList(2);
-                stackMap.put(frameNo,locals);
+                locals = new ArrayList<>(2);
+                stackMap.put(frameNo, locals);
             }
             locals.add(root);
         }
@@ -413,16 +411,17 @@ public class AnalyzeDorisFeHprof {
         }
     }
 
-    private Map<Instance, List<ThreadSync>> analyzeAndPrintTableLockQueue(
-            Map<Instance, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
+    private Map<Long, List<ThreadSync>> analyzeAndPrintTableLockQueue(
+            Map<Long, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
         System.out.println("===== Locks =====");
-        Map<Instance, List<ThreadSync>> analyzeWaitThreads = new LinkedHashMap<>();
+        Map<Long, List<ThreadSync>> analyzeWaitThreads = new LinkedHashMap<>();
         for (Entry<DbTable, Instance> kv : tableLockDependencies.dbTableToSyncObj.entrySet()) {
             DbTable dbTable = kv.getKey();
             Instance sync = kv.getValue();
 
-            System.out.println(dbTable + " lock:");
-            LockHolder lockHolder = lockHolders.get(sync);
+            String dbOrTable = (dbTable.table == null ? "db" : "table");
+            System.out.println(dbTable + " " + dbOrTable + " lock:");
+            LockHolder lockHolder = lockHolders.get(sync.getInstanceId());
             if (lockHolder != null) {
                 if (lockHolder.holdWriteLockThread != null) {
                     System.out.println("    hold write lock: \"" + lockHolder.holdWriteLockThread.threadName + "\"");
@@ -440,9 +439,10 @@ public class AnalyzeDorisFeHprof {
         return analyzeWaitThreads;
     }
 
-    private void analyzeAndPrintSyncQueue(Map<Long, ThreadEntity> threadObjIdToThread, Instance sync, Map<Instance, List<ThreadSync>> analyzeWaitThreads) {
+    private void analyzeAndPrintSyncQueue(
+            Map<Long, ThreadEntity> threadObjIdToThread, Instance sync, Map<Long, List<ThreadSync>> analyzeWaitThreads) {
         List<ThreadSync> threadSyncs = Lists.newArrayList();
-        analyzeWaitThreads.put(sync, threadSyncs);
+        analyzeWaitThreads.put(sync.getInstanceId(), threadSyncs);
 
         Instance head = (Instance) sync.getValueOfField("head");
         if (head == null) {
@@ -486,8 +486,8 @@ public class AnalyzeDorisFeHprof {
     }
 
     private void printThreadsWithLock(
-            Map<Long, ThreadBlockReason> blockThreads, Map<Instance, LockHolder> lockHolders, TableLockDependencies tableLockDependencies,
-            Map<Instance, List<ThreadSync>> syncToWaitingThreads) {
+            Map<Long, ThreadBlockReason> blockThreads, Map<Long, LockHolder> lockHolders, TableLockDependencies tableLockDependencies,
+            Map<Long, List<ThreadSync>> syncToWaitingThreads) {
 
         System.out.println("===== Threads =====");
         for (ThreadBlockReason threadBlockReason : blockThreads.values()) {
@@ -583,8 +583,8 @@ public class AnalyzeDorisFeHprof {
 
     private ThreadDepends analyzeBlockTree(
             ThreadBlockReason threadBlockReason,
-            Map<Instance, LockHolder> lockHolders,
-            Map<Instance, List<ThreadSync>> syncToWaitingThreads,
+            Map<Long, LockHolder> lockHolders,
+            Map<Long, List<ThreadSync>> syncToWaitingThreads,
             TableLockDependencies tableLockDependencies, Map<Long, ThreadBlockReason> blockThreads) {
         Map<Long, ThreadDepends> visitedThreadIds = Maps.newLinkedHashMap();
         Instance blockedSync = threadBlockReason.blockingReason.syncFrame.sync;
@@ -599,18 +599,19 @@ public class AnalyzeDorisFeHprof {
     }
 
     private void doAnalyzeBlockTree(Map<Long, ThreadDepends> visitedThreads,
-            Map<Instance, LockHolder> lockHolders, ThreadDepends depends, Instance blockedSync,
-            Map<Instance, List<ThreadSync>> syncToWaitingThreads,
+            Map<Long, LockHolder> lockHolders, ThreadDepends depends, Instance blockedSync,
+            Map<Long, List<ThreadSync>> syncToWaitingThreads,
             TableLockDependencies tableLockDependencies, Map<Long, ThreadBlockReason> blockThreads) {
+        long syncId = blockedSync.getInstanceId();
         if (depends.blockedSync.isRead) {
-            LockHolder lockHolder = lockHolders.get(blockedSync);
+            LockHolder lockHolder = lockHolders.get(syncId);
             if (lockHolder != null && lockHolder.holdWriteLockThread != null) {
                 analyzeNextDepends(
                         visitedThreads, lockHolders, depends, syncToWaitingThreads, tableLockDependencies,
                         blockThreads, blockedSync, lockHolder.holdWriteLockThread, false, true
                 );
             } else if (lockHolder != null) {
-                List<ThreadSync> threadSyncs = syncToWaitingThreads.get(blockedSync);
+                List<ThreadSync> threadSyncs = syncToWaitingThreads.get(syncId);
                 if (threadSyncs != null) {
                     for (ThreadSync threadSync : threadSyncs) {
                         if (!threadSync.isRead) {
@@ -625,17 +626,23 @@ public class AnalyzeDorisFeHprof {
                 }
             }
         } else {
-            LockHolder lockHolder = lockHolders.get(blockedSync);
+            LockHolder lockHolder = lockHolders.get(syncId);
             if (lockHolder != null && lockHolder.getHoldReadLockThreads() != null) {
                 for (ThreadEntity readThread : lockHolder.getHoldReadLockThreads().keySet()) {
-                    analyzeNextDepends(visitedThreads, lockHolders, depends, syncToWaitingThreads, tableLockDependencies,
+                    analyzeNextDepends(visitedThreads, lockHolders, depends, syncToWaitingThreads,
+                            tableLockDependencies,
                             blockThreads, blockedSync, readThread, true, true);
                 }
+            } else if (lockHolder != null && lockHolder.holdWriteLockThread != null
+                    && lockHolder.holdWriteLockThread.tid != depends.blockedSync.threadEntity.tid) {
+                analyzeNextDepends(visitedThreads, lockHolders, depends, syncToWaitingThreads,
+                        tableLockDependencies,
+                        blockThreads, blockedSync, lockHolder.holdWriteLockThread, false, true);
             } else {
-                List<ThreadSync> threadSyncs = syncToWaitingThreads.get(blockedSync);
+                List<ThreadSync> threadSyncs = syncToWaitingThreads.get(syncId);
                 if (threadSyncs != null) {
                     for (ThreadSync threadSync : threadSyncs) {
-                        if (threadSync.threadEntity.tid == depends.holdSync.threadEntity.tid) {
+                        if (depends.holdSync != null && threadSync.threadEntity.tid == depends.holdSync.threadEntity.tid) {
                             break;
                         } else {
                             analyzeNextDepends(visitedThreads, lockHolders, depends, syncToWaitingThreads, tableLockDependencies,
@@ -649,8 +656,8 @@ public class AnalyzeDorisFeHprof {
     }
 
     private void analyzeNextDepends(Map<Long, ThreadDepends> visitedThreads,
-            Map<Instance, LockHolder> lockHolders, ThreadDepends depends,
-            Map<Instance, List<ThreadSync>> syncToWaitingThreads,
+            Map<Long, LockHolder> lockHolders, ThreadDepends depends,
+            Map<Long, List<ThreadSync>> syncToWaitingThreads,
             TableLockDependencies tableLockDependencies,
             Map<Long, ThreadBlockReason> blockThreads, Instance holdSyncInstance, ThreadEntity nextThread,
             boolean isRead, boolean isHold) {
@@ -692,7 +699,8 @@ public class AnalyzeDorisFeHprof {
         );
     }
 
-    private void printThreadWithLock(ThreadEntity threadEntity, ThreadBlockReason threadBlockReason, Map<Instance, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
+    private void printThreadWithLock(
+            ThreadEntity threadEntity, ThreadBlockReason threadBlockReason, Map<Long, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
         printThreadWithContextId(threadEntity);
         if (threadBlockReason != null) {
             System.out.println("    blocked " + threadBlockReason.blockingReason);
@@ -700,23 +708,25 @@ public class AnalyzeDorisFeHprof {
         HoldTableLocks holdTableLock = findHoldTableLock(threadEntity, lockHolders, tableLockDependencies);
         if (!holdTableLock.writeTables.isEmpty()) {
             for (DbTable writeTable : holdTableLock.writeTables) {
-                System.out.println("    hold write lock: \"" + writeTable + "\"");
+                String dbOrTable = writeTable.table == null ? "db" : "table";
+                System.out.println("    hold write " + dbOrTable + " lock: \"" + writeTable + "\"");
             }
         }
         if (!holdTableLock.readTables.isEmpty()) {
             for (DbTable readTable : holdTableLock.readTables) {
-                System.out.println("    hold read lock:  \"" + readTable + "\"");
+                String dbOrTable = readTable.table == null ? "db" : "table";
+                System.out.println("    hold read " + dbOrTable + " lock:  \"" + readTable + "\"");
             }
         }
     }
 
     private Set<ThreadEntity> collectNonBlockingThreads(
-            Map<Long, ThreadBlockReason> blockThreads, Map<Instance, LockHolder> lockHolders,
+            Map<Long, ThreadBlockReason> blockThreads, Map<Long, LockHolder> lockHolders,
             TableLockDependencies tableLockDependencies) {
         Set<ThreadEntity> nonBlockingThreads = Sets.newLinkedHashSet();
-        for (Entry<Instance, LockHolder> kv : lockHolders.entrySet()) {
-            Instance sync = kv.getKey();
-            DbTable dbTable = tableLockDependencies.syncObjToDbTable.get(sync);
+        for (Entry<Long, LockHolder> kv : lockHolders.entrySet()) {
+            Long syncId = kv.getKey();
+            DbTable dbTable = tableLockDependencies.syncObjToDbTable.get(syncId);
             if (dbTable == null) {
                 continue;
             }
@@ -737,13 +747,13 @@ public class AnalyzeDorisFeHprof {
 
     private HoldTableLocks findHoldTableLock(
             ThreadEntity threadEntity,
-            Map<Instance, LockHolder> lockHolders,
+            Map<Long, LockHolder> lockHolders,
             TableLockDependencies tableLockDependencies) {
         HoldTableLocks holdTableLocks = new HoldTableLocks();
-        for (Entry<Instance, LockHolder> kv : lockHolders.entrySet()) {
-            Instance sync = kv.getKey();
+        for (Entry<Long, LockHolder> kv : lockHolders.entrySet()) {
+            Long syncId = kv.getKey();
             LockHolder holder = kv.getValue();
-            DbTable relateTable = tableLockDependencies.syncObjToDbTable.get(sync);
+            DbTable relateTable = tableLockDependencies.syncObjToDbTable.get(syncId);
             if (holder.holdWriteLockThread != null && holder.holdWriteLockThread.tid == threadEntity.tid) {
                 holdTableLocks.writeTables.add(relateTable);
             }
@@ -770,8 +780,8 @@ public class AnalyzeDorisFeHprof {
         return tableLockDependencies;
     }
 
-    private Map<Instance, LockHolder> analyzeHoldTableLockThreads(TableLockDependencies tableLockDependencies) {
-        Map<Instance, LockHolder> lockHolders = Maps.newLinkedHashMap();
+    private Map<Long, LockHolder> analyzeHoldTableLockThreads(TableLockDependencies tableLockDependencies) {
+        Map<Long, LockHolder> lockHolders = Maps.newLinkedHashMap();
         for (ThreadEntity threadEntity : threadObjIdToThread.values()) {
             for (StackFrameEntity stackFrame : threadEntity.stackFrames) {
                 for (GCRoot javaLocal : stackFrame.locals) {
@@ -779,10 +789,14 @@ public class AnalyzeDorisFeHprof {
                     if (classEntity == null) {
                         continue;
                     }
-                    if (hasSuperClass(classEntity, "org.apache.doris.catalog.OlapTable")) {
-                        analyzeHoldTableLock(javaLocal.getInstance(), lockHolders, tableLockDependencies);
+                    if (hasSuperClass(classEntity, "org.apache.doris.catalog.MTMV")) {
+                        analyzeHoldMtmvLock(threadEntity, javaLocal.getInstance(), lockHolders, tableLockDependencies);
+                    } else if (hasSuperClass(classEntity, "org.apache.doris.catalog.OlapTable")) {
+                        analyzeHoldTableLock(threadEntity, javaLocal.getInstance(), lockHolders, tableLockDependencies);
                     } else if (hasSuperClass(classEntity, "org.apache.doris.nereids.CascadesContext$Lock")) {
-                        analyzeHoldTableLockInCascadesContext(javaLocal.getInstance(), lockHolders, tableLockDependencies);
+                        analyzeHoldTableLockInCascadesContext(threadEntity, javaLocal.getInstance(), lockHolders, tableLockDependencies);
+                    } else if (hasSuperClass(classEntity, "org.apache.doris.catalog.Database")) {
+                        analyzeHoldDbLock(threadEntity, javaLocal.getInstance(), lockHolders, tableLockDependencies);
                     }
                 }
             }
@@ -790,8 +804,25 @@ public class AnalyzeDorisFeHprof {
         return lockHolders;
     }
 
-    private LockHolder analyzeReentrantReadWriteLockThreads(Instance sync, Map<Instance, LockHolder> lockHolders) {
-        LockHolder lockHolder = lockHolders.get(sync);
+    private void analyzeHoldMtmvLock(ThreadEntity threadEntity, Instance mtmv, Map<Long, LockHolder> lockHolders,
+            TableLockDependencies tableLockDependencies) {
+        DbTable dbTable = analyzeTable(mtmv);
+        Instance mvRwLock = (Instance) mtmv.getValueOfField("mvRwLock");
+        Instance mvRewriteSync = (Instance) mvRwLock.getValueOfField("sync");
+        tableLockDependencies.bind(new DbTable(dbTable.db, dbTable.table + "@mvRwLock"), mvRewriteSync);
+        analyzeReentrantReadWriteLockThreads(threadEntity, mvRewriteSync, lockHolders);
+
+        Instance rwLock = (Instance) mtmv.getValueOfField("rwLock");
+        Instance sync = (Instance) rwLock.getValueOfField("sync");
+        tableLockDependencies.bind(dbTable, sync);
+        analyzeReentrantReadWriteLockThreads(threadEntity, sync, lockHolders);
+    }
+
+    private LockHolder analyzeReentrantReadWriteLockThreads(
+            ThreadEntity currentThread, Instance sync, Map<Long, LockHolder> lockHolders) {
+        long syncId = sync.getInstanceId();
+        LockHolder lockHolder = lockHolders.get(syncId);
+
         if (lockHolder != null) {
             return lockHolder;
         }
@@ -805,7 +836,7 @@ public class AnalyzeDorisFeHprof {
             Instance exclusiveOwnerThread = (Instance) sync.getValueOfField("exclusiveOwnerThread");
             ThreadEntity writeLockThread = threadObjIdToThread.get(exclusiveOwnerThread.getInstanceId());
             lockHolder = new LockHolder(null, writeLockThread);
-            lockHolders.put(sync, lockHolder);
+            lockHolders.put(syncId, lockHolder);
             return lockHolder;
         } else if (isReadLocked) {
             Instance readHolds = (Instance) sync.getValueOfField("readHolds");
@@ -817,7 +848,7 @@ public class AnalyzeDorisFeHprof {
                 }
             }
             lockHolder = new LockHolder(holdReadLockThreads, null);
-            lockHolders.put(sync, lockHolder);
+            lockHolders.put(syncId, lockHolder);
             return lockHolder;
         }
         return LockHolder.noLock();
@@ -866,7 +897,8 @@ public class AnalyzeDorisFeHprof {
     }
 
     private void analyzeHoldTableLockInCascadesContext(
-            Instance cascadesTableLock, Map<Instance, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
+            ThreadEntity threadEntity, Instance cascadesTableLock,
+            Map<Long, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
         Instance lockStack = (Instance) cascadesTableLock.getValueOfField("locked");
         ObjectArrayInstance stackArray = (ObjectArrayInstance) lockStack.getValueOfField("elementData");
         Integer elementCount = (Integer) lockStack.getValueOfField("elementCount");
@@ -876,23 +908,47 @@ public class AnalyzeDorisFeHprof {
             if (!hasSuperClass(lockClass, "org.apache.doris.catalog.Table")) {
                 continue;
             }
-            analyzeHoldTableLock(lockItem, lockHolders, tableLockDependencies);
+            analyzeHoldTableLock(threadEntity, lockItem, lockHolders, tableLockDependencies);
         }
     }
 
     private DbTable analyzeTable(Instance table) {
-        String tableName = StringInstanceUtils.getDetailsString((Instance) table.getValueOfField("name"));
-        String dbName = StringInstanceUtils.getDetailsString((Instance) table.getValueOfField("qualifiedDbName"));
+        String tableName = StringInstanceUtils.getDetailsString(table.getValueOfField("name"));
+        String dbName = StringInstanceUtils.getDetailsString(table.getValueOfField("qualifiedDbName"));
         return new DbTable(dbName, tableName);
     }
 
+    private DbTable analyzeMTMV(Instance mtmv, Instance sync) {
+        String tableName = StringInstanceUtils.getDetailsString(mtmv.getValueOfField("name"));
+        String dbName = StringInstanceUtils.getDetailsString(mtmv.getValueOfField("qualifiedDbName"));
+        Instance mvRewriteSync = (Instance) ((Instance) mtmv.getValueOfField("mvRwLock")).getValueOfField("sync");
+        if (mvRewriteSync.getInstanceId() == sync.getInstanceId()) {
+            return new DbTable(dbName, tableName + "@mvRwLock");
+        }
+        return new DbTable(dbName, tableName);
+    }
+
+    private DbTable analyzeDb(Instance db) {
+        String dbName = StringInstanceUtils.getDetailsString(db.getValueOfField("fullQualifiedName"));
+        return new DbTable(dbName, null);
+    }
+
     private void analyzeHoldTableLock(
-            Instance table, Map<Instance, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
+            ThreadEntity threadEntity, Instance table, Map<Long, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
         DbTable dbTable = analyzeTable(table);
         Instance rwLock = (Instance) table.getValueOfField("rwLock");
         Instance sync = (Instance) rwLock.getValueOfField("sync");
         tableLockDependencies.bind(dbTable, sync);
-        analyzeReentrantReadWriteLockThreads(sync, lockHolders);
+        analyzeReentrantReadWriteLockThreads(threadEntity, sync, lockHolders);
+    }
+
+    private void analyzeHoldDbLock(
+            ThreadEntity threadEntity, Instance db, Map<Long, LockHolder> lockHolders, TableLockDependencies tableLockDependencies) {
+        DbTable dbTable = analyzeDb(db);
+        Instance rwLock = (Instance) db.getValueOfField("rwLock");
+        Instance sync = (Instance) rwLock.getValueOfField("sync");
+        tableLockDependencies.bind(dbTable, sync);
+        analyzeReentrantReadWriteLockThreads(threadEntity, sync, lockHolders);
     }
 
     private Map<Long, ThreadBlockReason> analyzeBlockingThreads() {
@@ -911,7 +967,7 @@ public class AnalyzeDorisFeHprof {
         StackFrameEntity topStackFrame = stackFrames.get(0);
         String topStackFrameString = topStackFrame.toString();
         if (topStackFrameString.contains("jdk.internal.misc.Unsafe.park(") || topStackFrameString.contains("sun.misc.Unsafe.park(")) {
-            boolean findOlapTable = false;
+            boolean findLock = false;
             for (int i = 0; i < stackFrames.size(); i++) {
                 StackFrameEntity stackFrame = stackFrames.get(i);
                 for (GCRoot javaLocal : stackFrame.locals) {
@@ -919,7 +975,10 @@ public class AnalyzeDorisFeHprof {
                     if (localVarClass == null) {
                         continue;
                     }
-                    if (hasSuperClass(localVarClass, "org.apache.doris.catalog.Table")) {
+
+                    boolean isTable = hasSuperClass(localVarClass, "org.apache.doris.catalog.Table");
+                    boolean isDb = hasSuperClass(localVarClass, "org.apache.doris.catalog.Database");
+                    if (isTable || isDb) {
                         SyncFrame syncFrame = findSyncFrame(stackFrames, i - 1);
                         if (syncFrame == null) {
                             return;
@@ -930,16 +989,26 @@ public class AnalyzeDorisFeHprof {
                             return;
                         }
 
-                        DbTable dbTable = analyzeTable(javaLocal.getInstance());
+                        DbTable dbTable;
+                        if (isTable) {
+                            if (hasSuperClass(localVarClass, "org.apache.doris.catalog.MTMV")) {
+                                dbTable = analyzeMTMV(javaLocal.getInstance(), syncFrame.sync);
+                            } else {
+                                dbTable = analyzeTable(javaLocal.getInstance());
+                            }
+                        } else {
+                            dbTable = analyzeDb(javaLocal.getInstance());
+                        }
                         ThreadBlockReason dependency = threadLockDependencies.computeIfAbsent(
                                 threadEntity.tid, tid -> new ThreadBlockReason(threadEntity));
                         dependency.blockingReason = new BlockingReason(
                                 syncFrame, dbTable, lockMethod
                         );
-                        findOlapTable = true;
+                        findLock = true;
+                        break;
                     }
                 }
-                if (findOlapTable) {
+                if (findLock) {
                     break;
                 }
             }
@@ -1086,7 +1155,8 @@ public class AnalyzeDorisFeHprof {
 
         @Override
         public String toString() {
-            return lockMethod + " lock: \"" + dbTable + "\"";
+            String dbOrTable = dbTable.table == null ? "db" : "table";
+            return lockMethod + " " + dbOrTable + " lock: \"" + dbTable + "\"";
         }
     }
 
@@ -1115,7 +1185,9 @@ public class AnalyzeDorisFeHprof {
 
         @Override
         public String toString() {
-            return threadEntity.threadName + " blocked at " + (blockingReason.lockMethod.isRead ? "read " : "write ") + blockingReason.dbTable;
+            String readOrWrite = blockingReason.lockMethod.isRead ? "read" : "write";
+            String dbOrTable = blockingReason.dbTable.table == null ? "db" : "table";
+            return threadEntity.threadName + " blocked at " + readOrWrite + " \"" + blockingReason.dbTable + "\" " + dbOrTable + " lock";
         }
     }
 
@@ -1129,6 +1201,9 @@ public class AnalyzeDorisFeHprof {
         }
         @Override
         public String toString() {
+            if (table == null) {
+                return db;
+            }
             return db + "." + table;
         }
 
@@ -1183,11 +1258,11 @@ public class AnalyzeDorisFeHprof {
 
     private static class TableLockDependencies {
         Map<DbTable, Instance> dbTableToSyncObj = Maps.newLinkedHashMap();
-        Map<Instance, DbTable> syncObjToDbTable = Maps.newLinkedHashMap();
+        Map<Long, DbTable> syncObjToDbTable = Maps.newLinkedHashMap();
 
         public void bind(DbTable dbTable, Instance sync) {
             dbTableToSyncObj.put(dbTable, sync);
-            syncObjToDbTable.put(sync, dbTable);
+            syncObjToDbTable.put(sync.getInstanceId(), dbTable);
         }
     }
 
@@ -1236,11 +1311,15 @@ public class AnalyzeDorisFeHprof {
         }
 
         public String formatHoldSync() {
-            return "hold " + (holdSync.isRead ? "read " : "write ") + '"' + holdSyncDbTable + '"';
+            String dbOrTable = holdSyncDbTable.table == null ? "db" :"table";
+            String readOrWrite = holdSync.isRead ? "read" : "write";
+            return "hold " + readOrWrite + " \"" + holdSyncDbTable + "\" " + dbOrTable + " lock";
         }
 
         public String formatBlockedSync() {
-            return "blocked at " + (blockedSync.isRead ? "read " : "write ") + '"' + blockedSyncDbTable + '"';
+            String dbOrTable = blockedSyncDbTable.table == null ? "db" : "table";
+            String readOrWrite = blockedSync.isRead ? "read" : "write";
+            return "blocked at " + readOrWrite + " \"" + blockedSyncDbTable + "\" " + dbOrTable + " lock";
         }
 
         @Override
