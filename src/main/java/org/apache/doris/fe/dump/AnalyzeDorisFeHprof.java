@@ -92,7 +92,7 @@ public class AnalyzeDorisFeHprof {
     private final Heap heap;
     private Map<Long, ThreadEntity> threadObjIdToThread;
     private Map<Long, ContextId> threadObjIdToContextId = Maps.newLinkedHashMap();
-    private Map<ThreadObjectGCRoot, Map<Integer, List<GCRoot>>> threadStackFrameLocals;
+    private Map<ThreadObjectGCRoot, Map<Integer, Pair<Instance, List<GCRoot>>>> threadStackFrameLocals;
 
     // tid -> ThreadBlockReason
     private Map<Long, ThreadBlockReason> blockThreads;
@@ -249,7 +249,7 @@ public class AnalyzeDorisFeHprof {
 
     private ThreadEntity toThreadEntity(ThreadObjectGCRoot thread) {
         Instance instance = thread.getInstance();
-        String threadName = StringInstanceUtils.getDetailsString((Instance) instance.getValueOfField("name"));
+        String threadName = StringInstanceUtils.getDetailsString(instance.getValueOfField("name"));
         Boolean daemon = (Boolean) instance.getValueOfField("daemon");
         Integer priority = (Integer) instance.getValueOfField("priority");
         Long tid = (Long) instance.getValueOfField("tid");
@@ -261,7 +261,7 @@ public class AnalyzeDorisFeHprof {
 
     private List<StackFrameEntity> toStackFrameEntities(ThreadObjectGCRoot thread) {
         StackTraceElement[] stackTrace = thread.getStackTrace();
-        Map<Integer, List<GCRoot>> frameToLocals = threadStackFrameLocals.get(thread);
+        Map<Integer, Pair<Instance, List<GCRoot>>> frameToLocals = threadStackFrameLocals.get(thread);
         if (frameToLocals == null) {
             return new ArrayList<>();
         }
@@ -269,11 +269,11 @@ public class AnalyzeDorisFeHprof {
         List<StackFrameEntity> stackFrameEntities = Lists.newArrayListWithCapacity(stackTrace.length);
         for (int i = 0; i < stackTrace.length; i++) {
             StackTraceElement stackTraceElement = stackTrace[i];
-            List<GCRoot> gcRoots = frameToLocals.get(i);
+            Pair<Instance, List<GCRoot>> gcRoots = frameToLocals.get(i);
             if (gcRoots == null) {
-                gcRoots = Lists.newArrayList();
+                gcRoots = new Pair<>(null, Lists.newArrayList());
             }
-            stackFrameEntities.add(new StackFrameEntity(stackTraceElement, gcRoots));
+            stackFrameEntities.add(new StackFrameEntity(stackTraceElement, gcRoots.key, gcRoots.value));
         }
         return stackFrameEntities;
     }
@@ -291,35 +291,38 @@ public class AnalyzeDorisFeHprof {
         return threads;
     }
 
-    private static Map<ThreadObjectGCRoot, Map<Integer, List<GCRoot>>> computeJavaFrameMap(Collection<GCRoot> roots) {
-        Map<ThreadObjectGCRoot, Map<Integer,List<GCRoot>>> javaFrameMap = new HashMap<>();
+    private static Map<ThreadObjectGCRoot, Map<Integer, Pair<Instance, List<GCRoot>>>> computeJavaFrameMap(Collection<GCRoot> roots) {
+        Map<ThreadObjectGCRoot, Map<Integer, Pair<Instance, List<GCRoot>>>> javaFrameMap = new HashMap<>();
         for (GCRoot root : roots) {
             ThreadObjectGCRoot threadObj;
             int frameNo;
+            Instance frameInstance = null;
 
             if (GCRoot.JAVA_FRAME.equals(root.getKind())) {
                 JavaFrameGCRoot frameGCroot = (JavaFrameGCRoot) root;
                 threadObj = frameGCroot.getThreadGCRoot();
                 frameNo = frameGCroot.getFrameNumber();
+                frameInstance = frameGCroot.getInstance();
             } else if (JNI_LOCAL.equals(root.getKind())) {
                 JniLocalGCRoot jniGCroot = (JniLocalGCRoot) root;
                 threadObj = jniGCroot.getThreadGCRoot();
                 frameNo = jniGCroot.getFrameNumber();
+                frameInstance = jniGCroot.getInstance();
             } else {
                 continue;
             }
 
-            Map<Integer,List<GCRoot>> stackMap = javaFrameMap.get(threadObj);
+            Map<Integer, Pair<Instance, List<GCRoot>>> stackMap = javaFrameMap.get(threadObj);
             if (stackMap == null) {
                 stackMap = new HashMap<>();
                 javaFrameMap.put(threadObj, stackMap);
             }
-            List<GCRoot> locals = stackMap.get(frameNo);
+            Pair<Instance, List<GCRoot>> locals = stackMap.get(frameNo);
             if (locals == null) {
-                locals = new ArrayList<>(2);
+                locals = new Pair<>(frameInstance, new ArrayList<>(2));
                 stackMap.put(frameNo, locals);
             }
-            locals.add(root);
+            locals.value.add(root);
         }
         return javaFrameMap;
     }
@@ -970,43 +973,64 @@ public class AnalyzeDorisFeHprof {
             boolean findLock = false;
             for (int i = 0; i < stackFrames.size(); i++) {
                 StackFrameEntity stackFrame = stackFrames.get(i);
-                for (GCRoot javaLocal : stackFrame.locals) {
-                    JavaClass localVarClass = javaLocal.getInstance().getJavaClass();
-                    if (localVarClass == null) {
-                        continue;
+
+                Instance db = null;
+                JavaClass dbClass = null;
+                Instance table = null;
+                JavaClass tableClass = null;
+                if (stackFrame.frameInstance != null
+                        && hasSuperClass(stackFrame.frameInstance.getJavaClass(), "org.apache.doris.catalog.Table")) {
+                    table = stackFrame.frameInstance;
+                    tableClass = table.getJavaClass();
+                } else if (stackFrame.frameInstance != null
+                        && hasSuperClass(stackFrame.frameInstance.getJavaClass(), "org.apache.doris.catalog.Database")) {
+                    db = stackFrame.frameInstance;
+                    dbClass = db.getJavaClass();
+                } else {
+                    for (GCRoot javaLocal : stackFrame.locals) {
+                        JavaClass localVarClass = javaLocal.getInstance().getJavaClass();
+                        if (localVarClass == null) {
+                            continue;
+                        }
+
+                        if (tableClass == null && hasSuperClass(localVarClass, "org.apache.doris.catalog.Table")) {
+                            table = javaLocal.getInstance();
+                            tableClass = localVarClass;
+                        } else if (dbClass == null && hasSuperClass(localVarClass, "org.apache.doris.catalog.Database")) {
+                            db = javaLocal.getInstance();
+                            dbClass = localVarClass;
+                        }
+                    }
+                }
+
+                JavaClass lockObj = tableClass != null ? tableClass : dbClass;
+                if (lockObj != null) {
+                    SyncFrame syncFrame = findSyncFrame(stackFrames, i - 1);
+                    if (syncFrame == null) {
+                        return;
                     }
 
-                    boolean isTable = hasSuperClass(localVarClass, "org.apache.doris.catalog.Table");
-                    boolean isDb = hasSuperClass(localVarClass, "org.apache.doris.catalog.Database");
-                    if (isTable || isDb) {
-                        SyncFrame syncFrame = findSyncFrame(stackFrames, i - 1);
-                        if (syncFrame == null) {
-                            return;
-                        }
+                    LockMethod lockMethod = findLockMethod(stackFrames, i - 1);
+                    if (!lockMethod.isRead && !lockMethod.isWrite) {
+                        return;
+                    }
 
-                        LockMethod lockMethod = findLockMethod(stackFrames, i - 1);
-                        if (!lockMethod.isRead && !lockMethod.isWrite) {
-                            return;
-                        }
-
-                        DbTable dbTable;
-                        if (isTable) {
-                            if (hasSuperClass(localVarClass, "org.apache.doris.catalog.MTMV")) {
-                                dbTable = analyzeMTMV(javaLocal.getInstance(), syncFrame.sync);
-                            } else {
-                                dbTable = analyzeTable(javaLocal.getInstance());
-                            }
+                    DbTable dbTable;
+                    if (tableClass != null) {
+                        if (hasSuperClass(lockObj, "org.apache.doris.catalog.MTMV")) {
+                            dbTable = analyzeMTMV(table, syncFrame.sync);
                         } else {
-                            dbTable = analyzeDb(javaLocal.getInstance());
+                            dbTable = analyzeTable(table);
                         }
-                        ThreadBlockReason dependency = threadLockDependencies.computeIfAbsent(
-                                threadEntity.tid, tid -> new ThreadBlockReason(threadEntity));
-                        dependency.blockingReason = new BlockingReason(
-                                syncFrame, dbTable, lockMethod
-                        );
-                        findLock = true;
-                        break;
+                    } else {
+                        dbTable = analyzeDb(db);
                     }
+                    ThreadBlockReason dependency = threadLockDependencies.computeIfAbsent(
+                            threadEntity.tid, tid -> new ThreadBlockReason(threadEntity));
+                    dependency.blockingReason = new BlockingReason(
+                            syncFrame, dbTable, lockMethod
+                    );
+                    findLock = true;
                 }
                 if (findLock) {
                     break;
@@ -1422,10 +1446,12 @@ public class AnalyzeDorisFeHprof {
 
     private static class StackFrameEntity {
         StackTraceElement stackTraceElement;
+        Instance frameInstance;
         List<GCRoot> locals;
 
-        public StackFrameEntity(StackTraceElement stackTraceElement, List<GCRoot> locals) {
+        public StackFrameEntity(StackTraceElement stackTraceElement, Instance frameInstance, List<GCRoot> locals) {
             this.stackTraceElement = stackTraceElement;
+            this.frameInstance = frameInstance;
             this.locals = locals;
         }
 
@@ -1708,6 +1734,16 @@ public class AnalyzeDorisFeHprof {
             } catch (Throwable t) {
                 return false;
             }
+        }
+    }
+
+    private static class Pair<K, V> {
+        K key;
+        V value;
+
+        public Pair(K key, V value) {
+            this.key = key;
+            this.value = value;
         }
     }
 }
